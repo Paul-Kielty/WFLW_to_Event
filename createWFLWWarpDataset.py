@@ -24,7 +24,7 @@ def generate_WFLW_warp_dataset():
     log_file = os.path.join(save_dir,"log.txt")
         
     ''' RGB MOTION SIMULATION OPTIONS'''
-    base_crop_size = 512 # Determines the base size of the crop that moves over the full image
+    base_crop_size = 256 # Determines the base size of the crop that moves over the full image
     output_size = base_crop_size # size of the output images. If different to base_crop_size, the images will be resized to this after warping
 
     scale_crop_above_face = 1.2 # if base crop size is smaller than the bbox, scale the crop size by this factor above the face bounding box
@@ -32,12 +32,13 @@ def generate_WFLW_warp_dataset():
                               # to ensure that the face has space to move around in the crop
     pause_probability = 0.5 # probability that the sequence contains a pause that will last around 10% of the frames. Few events, if any, will be generated over the pause
     
-    min_face = 128 # minimum face size in pixels to consider the image for warping (to prevent too small faces)
+    min_face = 32 # minimum face size in pixels to consider the image for warping (to prevent too small faces)
     max_face = None # maximum face size in pixels to consider the image for warping
-    max_skew = 0 # TODO: (Not working correctly) Maximum skew allowed in the homography matrix (to prevent too much perspective distortion)
+    # max_skew = 0 # TODO: (Not working correctly) Maximum skew allowed in the homography matrix (to prevent too much perspective distortion)
     show_warp_animation = False # if True, shows an animation of the warped RGB frames during generation
     rgb_event_fps_ratio = 5 # ratio of the number of RGB frames to the number of event frames (e.g. 5 means 5 RGB frames for every 1 event frame, replaces need for slomo)
-    
+    min_speed = 1e-4
+    max_speed = 3e-2
     
     ''' EVENT SIMULATION OPTIONS '''
     num_frames = 15 # total number of event frames to generate (requires generating num_frames+1 RGB frames)
@@ -76,9 +77,9 @@ def generate_WFLW_warp_dataset():
         bboxes.append(bbox)
         attrs.append(attr)
 
-    already_completed = glob(save_dir + "\\*\\")
-    already_completed_indices = [int(i.split("\\")[-2]) for i in already_completed]
-    start_i = max(already_completed_indices) + 1 if len(already_completed_indices) > 0 else 0
+    # already_completed = glob(save_dir + "\\*\\*event_video.avi")
+    # already_completed_indices = [int(i.split("\\")[-2]) for i in already_completed]
+    # start_i = max(already_completed_indices) + 1 if len(already_completed_indices) > 0 else 0
     
     simulated_indices = []
     if os.path.exists(log_file):
@@ -88,21 +89,21 @@ def generate_WFLW_warp_dataset():
                 index = int(line.split("\n")[0])
                 simulated_indices.append(index)
 
-    for index in tqdm(range(start_i,len(image_paths),1)):
+    for index in tqdm(range(0,len(image_paths),1)):
         if index in simulated_indices:
             continue
         
         ''' Loading images, landmarks'''
         save_path = save_dir + f"\\{index}"
-        if index in already_completed_indices:
-            print("Deleting: ", save_path)
-            if os.path.exists(save_path+"\\event_video.avi"):
-                print("**** but found event video?")
-                exit()
-            del_files = glob(save_path+"\\*")
-            for file in del_files:
-                os.remove(file)
-            os.rmdir(save_path)
+        # if index in already_completed_indices:
+        #     print("Deleting: ", save_path)
+        #     if os.path.exists(save_path+"\\event_video.avi"):
+        #         print("**** but found event video?")
+        #         exit()
+        #     del_files = glob(save_path+"\\*")
+        #     for file in del_files:
+        #         os.remove(file)
+        #     os.rmdir(save_path)
             
         image = image_paths[index]
         landmark = np.array(landmarks[index]) 
@@ -141,16 +142,17 @@ def generate_WFLW_warp_dataset():
         
         warp_output = run_camera_warping(height, width, num_frames, img, landmark, crop_size, 
                                          min_face_pad_in_crop=min_face_pad_in_crop, 
-                                         max_skew=max_skew, 
+                                        #  max_skew=max_skew, 
+                                         min_speed=min_speed, max_speed=max_speed,
                                          pause_probability=pause_probability,
                                          show_warp_animation=show_warp_animation,
                                          rgb_event_fps_ratio = rgb_event_fps_ratio,
                                         )
         if warp_output is None:
             continue
-        new_images, new_landmarks, new_bboxes = warp_output
+        new_images, new_landmarks, new_bboxes, crop_size = warp_output
 
-        if output_size != new_images[0].shape[0] or output_size != new_images[0].shape[1]: #resize images
+        if output_size != crop_size or output_size != crop_size: #resize images
             # Crop and resize images
             resized_images = []
             resized_landmarks = []
@@ -342,10 +344,10 @@ def limit_skew(H, max_skew=0.1):
     
     # Recompose the matrix
     H_limited_skew = np.dot(Q, R)
-    # H_limited_skew[2, :2] = 0/
     return H_limited_skew
 
 def run_camera_warping(height, width, num_frames, img, landmark, crop_size, 
+                       min_speed = 1e-3, max_speed = 1e-1,
                        min_face_pad_in_crop=30, max_skew=0.1, show_warp_animation=False, 
                        retry_limit=20, pause_probability=0, rgb_event_fps_ratio=1):
     retry_count = 0
@@ -363,14 +365,14 @@ def run_camera_warping(height, width, num_frames, img, landmark, crop_size,
         new_images = []
         
         camera = CameraPoseGenerator(height, width, pause_probability=pause_probability, 
-                                     max_frames=(num_frames+1)*rgb_event_fps_ratio, min_speed=1e-4/rgb_event_fps_ratio, 
-                                     max_speed=1e-2/rgb_event_fps_ratio, max_interp_consecutive_frames=2)
+                                     max_frames=(num_frames+1)*rgb_event_fps_ratio, min_speed=min_speed/rgb_event_fps_ratio, 
+                                     max_speed=max_speed/rgb_event_fps_ratio, max_interp_consecutive_frames=2)
         landmark_warped = np.zeros_like(landmark)
 
         while len(new_images) < num_frames*rgb_event_fps_ratio+1:
             
             H,ts = camera()
-            H = limit_skew(H, max_skew=max_skew)
+            # H = limit_skew(H, max_skew=max_skew) # Needs revisiting
             warp = cv2.warpPerspective(img, H, (width, height), borderMode=cv2.BORDER_REFLECT)
             
             if len(new_images)%rgb_event_fps_ratio == 0:
@@ -388,27 +390,29 @@ def run_camera_warping(height, width, num_frames, img, landmark, crop_size,
         
         
         new_bboxes = np.array(new_bboxes)
-        # Convert warped trapezoidal bbox back to rectangular bbox
-        x1, y1, x2, y2 = np.min(new_bboxes[:,0]), np.min(new_bboxes[:,1]), np.max(new_bboxes[:,0]+new_bboxes[:,2]), np.max(new_bboxes[:,1]+new_bboxes[:,3])
-        max_bbox_w, max_bbox_h = x2-x1, y2-y1
-        crop_centre = (x1 + max_bbox_w/2, y1 + max_bbox_h/2)
+        
+        max_x1, max_y1, max_x2, max_y2 = np.min(new_bboxes[:,0]), np.min(new_bboxes[:,1]), np.max(new_bboxes[:,0]+new_bboxes[:,2]), np.max(new_bboxes[:,1]+new_bboxes[:,3])
+        max_bbox_w, max_bbox_h = max_x2-max_x1, max_y2-max_y1
+        crop_centre = (max_x1 + max_bbox_w/2, max_y1 + max_bbox_h/2)
         new_crop_size = crop_size
 
-        # Check if the new bboxes are within the set crop
-        face_within_bounds = True
+        # Check if the new bboxes are within the set crop by min amount
         if max_bbox_w + min_face_pad_in_crop >= crop_size or max_bbox_h + min_face_pad_in_crop >= crop_size:
+            # not within crop, increase crop size
             new_crop_size = int(max(max_bbox_w, max_bbox_h)+min_face_pad_in_crop)
             # print("\tBbox moves too much for current crop, increasing crop size to", new_crop_size)
             
         new_crop_top_left = (int(crop_centre[0]-new_crop_size/2), int(crop_centre[1]-new_crop_size/2))
         crop_corners = np.array([new_crop_top_left[0], new_crop_top_left[1], new_crop_top_left[0]+new_crop_size, new_crop_top_left[1]+new_crop_size], dtype=int)
 
-        if crop_corners[0] < 0 or crop_corners[1] < 0 or crop_corners[2] > width or crop_corners[3] > height:
+        # Check if the crop is within the image bounds
+        face_within_bounds = True
+        if crop_corners[0] < 0 or crop_corners[1] < 0 or crop_corners[2] >= width or crop_corners[3] >= height:
             # print("\tCrop out of bounds, regenerating warp...")
             face_within_bounds = False
         
     if retries_exceeded:
-        return None #continue
+        return None
     
     if show_warp_animation:
         plt.close('all')
@@ -419,6 +423,7 @@ def run_camera_warping(height, width, num_frames, img, landmark, crop_size,
             warp_ani = new_image.copy()
             x1, y1, w, h = new_bbox
             warp_ani = cv2.rectangle(warp_ani, (int(x1), int(y1)), (int(x1+w), int(y1+h)), (255,0,0), 2)
+            warp_ani = cv2.rectangle(warp_ani, (crop_corners[0], crop_corners[1]), (crop_corners[2], crop_corners[3]), (0,255,0), 2)
 
             for x,y in new_landmark:
                 warp_ani = cv2.circle(warp_ani, (int(x), int(y)), 3, (0,0,255), -1)
@@ -431,7 +436,7 @@ def run_camera_warping(height, width, num_frames, img, landmark, crop_size,
     new_landmarks = new_landmarks - crop_corners[0:2]
     new_bboxes = new_bboxes - np.array([crop_corners[0], crop_corners[1], 0, 0])
     new_images = [new_image[crop_corners[1]:crop_corners[3], crop_corners[0]:crop_corners[2]] for new_image in new_images]
-    return new_images, new_landmarks, new_bboxes
+    return new_images, new_landmarks, new_bboxes, new_crop_size
 
 if __name__ == "__main__":
     generate_WFLW_warp_dataset()
