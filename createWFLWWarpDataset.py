@@ -206,9 +206,9 @@ def generate_WFLW_warp_dataset():
                     new_events = next(sim_window_iter)
                     output_window.append(new_events)
                 output_window = np.concatenate(output_window, axis=0)
-                np.save(save_path + f"\\{str(i).zfill(3)}_events.npy", new_events.astype(np.float32))
+                np.save(save_path + f"\\{str(i).zfill(3)}_events.npy", output_window.astype(np.float32))
         else:
-            events = simulateEventsV2e(new_images, emulator, fps=fps, use_slomo=use_slomo)
+            events = simulateEventsV2e(new_images, emulator, fps=fps*rgb_event_fps_ratio, use_slomo=use_slomo)
             np.save(save_path + "\\events.npy", events) # Save events to numpy
             
         emulator.cleanup()
